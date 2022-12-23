@@ -228,8 +228,8 @@ sap.ui.define([
 			 *      column or grouping is disabled.</li>
 			 * </ul>
 			 *
-			 * @experimental As of 1.28. This feature has a limited functionality.
 			 * @see sap.ui.table.Table#setGroupBy
+			 * @deprecated As of version 1.110, this feature has a limited functionality and should not be used anymore.
 			 */
 			enableGrouping: {type: "boolean", group: "Behavior", defaultValue: false},
 
@@ -832,15 +832,17 @@ sap.ui.define([
 			 * @since 1.23.0
 			 */
 			customFilter: {
-				/**
-				 * The column instance on which the custom filter button was pressed.
-				 */
-				column: {type: "sap.ui.table.Column"},
+				parameters: {
+					/**
+					 * The column instance on which the custom filter button was pressed.
+					 */
+					column: {type: "sap.ui.table.Column"},
 
-				/**
-				 * Filter value.
-				 */
-				value: {type: "string"}
+					/**
+					 * Filter value.
+					 */
+					value: {type: "string"}
+				}
 			},
 
 			/**
@@ -850,10 +852,12 @@ sap.ui.define([
 			 * @protected
 			 */
 			firstVisibleRowChanged: {
-				/**
-				 * First visible row
-				 */
-				firstVisibleRow: {type: "int"}
+				parameters: {
+					/**
+					 * First visible row
+					 */
+					firstVisibleRow: {type: "int"}
+				}
 			},
 
 			/**
@@ -862,10 +866,12 @@ sap.ui.define([
 			 * @protected
 			 */
 			busyStateChanged: {
-				/**
-				 * busy state
-				 */
-				busy: {type: "boolean"}
+				parameters: {
+					/**
+					 * busy state
+					 */
+					busy: {type: "boolean"}
+				}
 			},
 
 			/**

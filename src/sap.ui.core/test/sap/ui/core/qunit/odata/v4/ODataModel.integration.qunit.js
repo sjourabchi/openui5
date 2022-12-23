@@ -15,6 +15,7 @@ sap.ui.define([
 	"sap/ui/core/Configuration",
 	"sap/ui/core/mvc/Controller",
 	"sap/ui/core/mvc/View",
+	"sap/ui/model/ChangeReason",
 	"sap/ui/model/Filter",
 	"sap/ui/model/FilterOperator",
 	"sap/ui/model/FilterType",
@@ -30,9 +31,9 @@ sap.ui.define([
 	// load Table resources upfront to avoid loading times > 1 second for the first test using Table
 	"sap/ui/table/Table"
 ], function (Log, uid, ColumnListItem, CustomListItem, FlexBox, _MessageStrip, Text, Device,
-		EventProvider, SyncPromise, Configuration, Controller, View, Filter, FilterOperator,
-		FilterType, Sorter, OperationMode, AnnotationHelper, ODataListBinding, ODataModel,
-		ValueListType, _Helper, TestUtils, XMLHelper) {
+		EventProvider, SyncPromise, Configuration, Controller, View, ChangeReason, Filter,
+		FilterOperator, FilterType, Sorter, OperationMode, AnnotationHelper, ODataListBinding,
+		ODataModel, ValueListType, _Helper, TestUtils, XMLHelper) {
 	/*eslint no-sparse-arrays: 0, "max-len": ["error", {"code": 100,
 		"ignorePattern": "/sap/opu/odata4/|\" :$|\" : \\{$|\\{meta>"}], */
 	"use strict";
@@ -190,6 +191,16 @@ sap.ui.define([
 	 */
 	function getNormalizedPath(oContext) {
 		return normalizeUID(oContext.getPath());
+	}
+
+	/**
+	 * Returns the given context's data object.
+	 *
+	 * @param {sap.ui.model.Context} oContext - A context
+	 * @returns {object} The context's data
+	 */
+	function getObject(oContext) {
+		return oContext.getObject();
 	}
 
 	/**
@@ -1861,6 +1872,9 @@ sap.ui.define([
 				if (!("@odata.count" in vResponse)) {
 					throw new Error('Missing "@odata.count" in response for ' + vRequest.method
 						+ " " + vRequest.url);
+				} else if (typeof vResponse["@odata.count"] !== "string") {
+					throw new Error('Unexpected "@odata.count" : ' + vResponse["@odata.count"]
+						+ " in response for " + vRequest.method + " " + vRequest.url);
 				}
 				aMatches = rTop.exec(vRequest.url);
 				if (aMatches) {
@@ -3240,7 +3254,7 @@ sap.ui.define([
 		return this.createView(assert).then(function () {
 			var oPromise;
 
-			that.expectRequest("GetEmployeeByID(EmployeeID='1')");
+			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {ID : "1"});
 
 			oBinding = that.oModel.bindContext("/GetEmployeeByID(...)");
 			oBinding.setParameter("EmployeeID", "1");
@@ -3249,13 +3263,13 @@ sap.ui.define([
 
 			return Promise.all([oPromise, that.waitForChanges(assert)]);
 		}).then(function () {
-			that.expectRequest("GetEmployeeByID(EmployeeID='1')");
+			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {ID : "1"});
 
 			oBinding.refresh();
 
 			return that.waitForChanges(assert);
 		}).then(function () {
-			that.expectRequest("GetEmployeeByID(EmployeeID='2')");
+			that.expectRequest("GetEmployeeByID(EmployeeID='2')", {ID : "2"});
 
 			return Promise.all([
 				oBinding.execute(),
@@ -7095,13 +7109,30 @@ sap.ui.define([
 
 	//*********************************************************************************************
 	// Scenario: Modify a property which does not belong to the parent binding's entity
+	//
+	// Additionally, observe the "propertyChange" event (JIRA: CPOUI5ODATAV4-1919)
 	QUnit.test("Modify a foreign property", function (assert) {
-		var sView = '\
+		var oContext,
+			iCount = 0,
+			sView = '\
 <Table id="table" items="{/SalesOrderList}">\
 	<Input id="item" value="{SO_2_BP/CompanyName}"/>\
 </Table>',
 			oModel = this.createSalesOrdersModel({autoExpandSelect : true}),
 			that = this;
+
+		// code under test
+		oModel.attachPropertyChange(function (oEvent) {
+			iCount += 1;
+			assert.strictEqual(oEvent.getSource(), oModel);
+			assert.deepEqual(oEvent.getParameters(), {
+				context : oContext,
+				path : "SO_2_BP/CompanyName",
+				reason : ChangeReason.Binding,
+				resolvedPath : "/SalesOrderList('0500000002')/SO_2_BP/CompanyName",
+				value : "Bar"
+			}, "JIRA: CPOUI5ODATAV4-1919");
+		});
 
 		this.expectRequest("SalesOrderList?$select=SalesOrderID"
 				+ "&$expand=SO_2_BP($select=BusinessPartnerID,CompanyName)&$skip=0&$top=100", {
@@ -7117,6 +7148,10 @@ sap.ui.define([
 			.expectChange("item", ["Foo"]);
 
 		return this.createView(assert, sView, oModel).then(function () {
+			var oCell = that.oView.byId("table").getItems()[0].getCells()[0];
+
+			oContext = oCell.getBindingContext();
+
 			that.expectRequest({
 					method : "PATCH",
 					url : "BusinessPartnerList('42')",
@@ -7125,10 +7160,12 @@ sap.ui.define([
 				}, {CompanyName : "Bar"})
 				.expectChange("item", ["Bar"]);
 
-			that.oView.byId("table").getItems()[0].getCells()[0].getBinding("value")
-				.setValue("Bar");
+			// code under test
+			oCell.getBinding("value").setValue("Bar");
 
 			return that.waitForChanges(assert);
+		}).then(function () {
+			assert.strictEqual(iCount, 1, "propertyChange fired once");
 		});
 	});
 
@@ -7306,7 +7343,13 @@ sap.ui.define([
 					url : "EntitiesWithComplexKey(Key1='foo',Key2=42)",
 					headers : {"If-Match" : "ETag"},
 					payload : {Value : "New"}
-				}, {Value : "New"})
+				}, {
+					Key : {
+						P1 : "foo",
+						P2 : 42
+					},
+					Value : "New"
+				})
 				.expectChange("item", ["New"]);
 
 			that.oView.byId("table").getItems()[0].getCells()[0].getBinding("value")
@@ -7616,6 +7659,12 @@ sap.ui.define([
 					method : "PATCH",
 					url : "EntitiesWithComplexKey(Key1='p1',Key2=2)",
 					payload : {Value : "changed"}
+				}, {
+					Key : {
+						P1 : "p1",
+						P2 : 2
+					},
+					Value : "changed"
 				});
 
 			oBinding.setValue("changed");
@@ -12631,7 +12680,7 @@ sap.ui.define([
 
 		this.expectRequest("EMPLOYEES?$count=true&$filter=TEAM_ID eq '77'&$select=ID,Name,TEAM_ID"
 				+ "&$skip=0&$top=100", {
-				"@odata.count" : 3,
+				"@odata.count" : "3",
 				value : [
 					{ID : "0", Name : "Frederic Fall", TEAM_ID : "77"},
 					{ID : "1", Name : "Jonathan Smith", TEAM_ID : "77"},
@@ -12734,7 +12783,10 @@ sap.ui.define([
 		return this.createView(assert, sView, oModel).then(function () {
 			//TODO the query options for the function import are not enhanced
 			// that.expectRequest("GetEmployeeByID(EmployeeID='1')?$select=ID,Name", {
-			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {Name : "Jonathan Smith"})
+			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {
+					ID : "1",
+					Name : "Jonathan Smith"
+				})
 				.expectChange("name", "Jonathan Smith");
 
 			return Promise.all([
@@ -14679,7 +14731,10 @@ sap.ui.define([
 
 			oFunctionBinding.refresh(); // MUST NOT trigger a request!
 
-			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {Name : "Jonathan Smith"})
+			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {
+					ID : "1",
+					Name : "Jonathan Smith"
+				})
 				.expectChange("name", "Jonathan Smith");
 
 			return Promise.all([
@@ -14687,7 +14742,10 @@ sap.ui.define([
 				that.waitForChanges(assert)
 			]);
 		}).then(function () {
-			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {Name : "Frederic Fall"})
+			that.expectRequest("GetEmployeeByID(EmployeeID='1')", {
+					ID : "1",
+					Name : "Frederic Fall"
+				})
 				.expectChange("name", "Frederic Fall");
 			oFunctionBinding.refresh();
 
@@ -14697,7 +14755,10 @@ sap.ui.define([
 
 			oFunctionBinding.refresh(); // MUST NOT trigger a request!
 
-			that.expectRequest("GetEmployeeByID(EmployeeID='2')", {Name : "Peter Burke"})
+			that.expectRequest("GetEmployeeByID(EmployeeID='2')", {
+					ID : "2",
+					Name : "Peter Burke"
+				})
 				.expectChange("name", "Peter Burke");
 
 			return Promise.all([
@@ -14705,7 +14766,10 @@ sap.ui.define([
 				that.waitForChanges(assert)
 			]);
 		}).then(function () {
-			that.expectRequest("GetEmployeeByID(EmployeeID='2')", {Name : "Jonathan Smith"})
+			that.expectRequest("GetEmployeeByID(EmployeeID='2')", {
+					ID : "2",
+					Name : "Jonathan Smith"
+				})
 				.expectChange("name", "Jonathan Smith");
 			oFunctionBinding.refresh();
 
@@ -14742,6 +14806,7 @@ sap.ui.define([
 			]);
 		}).then(function () {
 			that.expectRequest("GetEmployeeByID(EmployeeID='1')?$select=ID,Name", {
+					ID : "1",
 					Name : "Frederic Fall"
 				})
 				.expectChange("name", "Frederic Fall");
@@ -14765,6 +14830,7 @@ sap.ui.define([
 			]);
 		}).then(function () {
 			that.expectRequest("GetEmployeeByID(EmployeeID='2')?$select=ID,Name", {
+					ID : "2",
 					Name : "Jonathan Smith"
 				})
 				.expectChange("name", "Jonathan Smith");
@@ -14991,17 +15057,14 @@ sap.ui.define([
 			fnRespond2();
 
 			return oPromise2.then(function (aResult) {
-				assert.deepEqual(aResult.map(function (oContext) {
-					return oContext.getObject();
-				}), aValues.slice(1040, 1050), "2nd request may well overtake 1st one");
+				assert.deepEqual(aResult.map(getObject), aValues.slice(1040, 1050),
+					"2nd request may well overtake 1st one");
 			});
 		}).then(function () {
 			fnRespond1();
 
 			return oPromise1.then(function (aResult) {
-				assert.deepEqual(aResult.map(function (oContext) {
-					return oContext.getObject();
-				}), aValues.slice(1030, 1040));
+				assert.deepEqual(aResult.map(getObject), aValues.slice(1030, 1040));
 			});
 		});
 	});
@@ -20020,6 +20083,142 @@ sap.ui.define([
 	});
 
 	//*********************************************************************************************
+	// Scenario: Data aggregation which aggregates a key property (count number of sales orders per
+	// lifecycle status) via $$aggregation or directly via $apply. Expect no issues with duplicate
+	// key predicates.
+	// BCP: 2280187516
+[false, true].forEach(function (bApply) {
+	var sTitle = "Data Aggregation: aggregate a key property, use $apply: " + bApply;
+
+	QUnit.test(sTitle, function (assert) {
+		var oModel = this.createSalesOrdersModel(),
+			mParameters = bApply
+			? {$apply : "groupby((LifecycleStatus),aggregate(SalesOrderID))"}
+			: {
+				$$aggregation : {
+					aggregate : {
+						SalesOrderID : {}
+					},
+					group : {
+						LifecycleStatus : {}
+					}
+				}
+			},
+			that = this;
+
+		return this.createView(assert, "", oModel).then(function () {
+			var oBinding = oModel.bindList("/SalesOrderList", null, [], [], mParameters);
+
+			that.expectRequest("SalesOrderList"
+					+ "?$apply=groupby((LifecycleStatus),aggregate(SalesOrderID))"
+					+ "&$skip=0&$top=10", {
+					value : [{
+						LifecycleStatus : "Z",
+						SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"
+					}, {
+						LifecycleStatus : "Y",
+						SalesOrderID : 3, "SalesOrderID@odata.type" : "#Int32"
+					}, {
+						LifecycleStatus : "X",
+						SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"
+					}]
+				});
+
+			return oBinding.requestContexts(0, 10);
+		}).then(function (aContexts) {
+			assert.notStrictEqual(aContexts[0], aContexts[2], "no duplicates");
+			assert.deepEqual(aContexts.map(getPath),
+				["/SalesOrderList/0", "/SalesOrderList/1", "/SalesOrderList/2"]);
+			assert.deepEqual(aContexts.map(getObject), [
+				{LifecycleStatus : "Z", SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"},
+				{LifecycleStatus : "Y", SalesOrderID : 3, "SalesOrderID@odata.type" : "#Int32"},
+				{LifecycleStatus : "X", SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"}
+			]);
+		});
+	});
+});
+
+	//*********************************************************************************************
+	// Scenario: Data aggregation which aggregates a key property (count number of sales orders per
+	// lifecycle status) via $$aggregation including a grand total. Expect no issues with duplicate
+	// key predicates.
+	// BCP: 2280187516
+	QUnit.test("Data Aggregation: aggregate a key property, w/ grand total", function (assert) {
+		var oModel = this.createSalesOrdersModel(),
+			mParameters = {
+				$$aggregation : {
+					aggregate : {
+						SalesOrderID : {grandTotal : true}
+					},
+					group : {
+						LifecycleStatus : {}
+					}
+				}
+			},
+			that = this;
+
+		return this.createView(assert, "", oModel).then(function () {
+			var oBinding = oModel.bindList("/SalesOrderList", null, [], [], mParameters);
+
+			that.expectRequest("SalesOrderList?$apply=concat(aggregate(SalesOrderID)"
+					+ ",groupby((LifecycleStatus),aggregate(SalesOrderID))"
+					+ "/concat(aggregate($count as UI5__count),top(9)))", {
+					value : [{
+						LifecycleStatus : null,
+						SalesOrderID : 5, "SalesOrderID@odata.type" : "#Int32"
+					}, {
+						UI5__count : "3", "UI5__count@odata.type" : "#Decimal"
+					}, {
+						LifecycleStatus : "Z",
+						SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"
+					}, {
+						LifecycleStatus : "Y",
+						SalesOrderID : 3, "SalesOrderID@odata.type" : "#Int32"
+					}, {
+						LifecycleStatus : "X",
+						SalesOrderID : 1, "SalesOrderID@odata.type" : "#Int32"
+					}]
+				});
+
+			return oBinding.requestContexts(0, 10);
+		}).then(function (aContexts) {
+			assert.notStrictEqual(aContexts[0], aContexts[2], "no duplicates");
+			assert.deepEqual(aContexts.map(getPath), [
+				"/SalesOrderList()",
+				"/SalesOrderList(LifecycleStatus='Z')",
+				"/SalesOrderList(LifecycleStatus='Y')",
+				"/SalesOrderList(LifecycleStatus='X')"
+			]);
+			assert.deepEqual(aContexts.map(getObject), [{
+				"@$ui5.node.isExpanded" : true,
+				"@$ui5.node.isTotal" : true,
+				"@$ui5.node.level" : 0,
+				LifecycleStatus : null,
+				SalesOrderID : 5,
+				"SalesOrderID@odata.type" : "#Int32"
+			}, {
+				"@$ui5.node.isTotal" : false,
+				"@$ui5.node.level" : 1,
+				LifecycleStatus : "Z",
+				SalesOrderID : 1,
+				"SalesOrderID@odata.type" : "#Int32"
+			}, {
+				"@$ui5.node.isTotal" : false,
+				"@$ui5.node.level" : 1,
+				LifecycleStatus : "Y",
+				SalesOrderID : 3,
+				"SalesOrderID@odata.type" : "#Int32"
+			}, {
+				"@$ui5.node.isTotal" : false,
+				"@$ui5.node.level" : 1,
+				LifecycleStatus : "X",
+				SalesOrderID : 1,
+				"SalesOrderID@odata.type" : "#Int32"
+			}]);
+		});
+	});
+
+	//*********************************************************************************************
 	// Scenario: sap.m.Table with aggregation and visual grouping.
 	// JIRA: CPOUI5ODATAV4-162
 	//
@@ -22703,7 +22902,7 @@ sap.ui.define([
 			that.expectRequest("BusinessPartners?$count=true&$search=covfefe&$apply"
 					+ "=filter(Name eq 'Foo')/search(tee)/groupby((Region),aggregate(SalesNumber))"
 					+ "&$filter=SalesNumber gt 0&$skip=0&$top=100", {
-					"@odata.count" : 0,
+					"@odata.count" : "0",
 					value : [
 						// ... (don't care)
 					]
@@ -22770,9 +22969,7 @@ sap.ui.define([
 			var aContexts = aResults[0];
 
 			assert.strictEqual(oListBinding.getHeaderContext().getProperty("$count"), 26);
-			assert.deepEqual(aContexts.map(function (oContext) {
-				return oContext.getObject();
-			}), [{
+			assert.deepEqual(aContexts.map(getObject), [{
 				"@$ui5.node.isExpanded" : true,
 				"@$ui5.node.isTotal" : true,
 				"@$ui5.node.level" : 0,
@@ -22880,9 +23077,7 @@ sap.ui.define([
 			var aContexts = aResults[0];
 
 			assert.strictEqual(oListBinding.getHeaderContext().getProperty("$count"), 26);
-			assert.deepEqual(aContexts.map(function (oContext) {
-				return oContext.getObject();
-			}), [{
+			assert.deepEqual(aContexts.map(getObject), [{
 				"@$ui5.node.isExpanded" : true,
 				"@$ui5.node.isTotal" : true,
 				"@$ui5.node.level" : 0,
@@ -23269,7 +23464,7 @@ sap.ui.define([
 
 			that.expectRequest("SalesOrderList?$apply=groupby((LifecycleStatus))&$count=true"
 					+ "&$skip=0&$top=100", {
-					"@odata.count" : 1,
+					"@odata.count" : "1",
 					value : [{LifecycleStatus : "Y"}]
 				})
 				.expectChange("grossAmount", [null])
@@ -23627,7 +23822,7 @@ sap.ui.define([
 				+ "&$select=DrillState,ID,MANAGER_ID,SALARY/BONUS_CURR,SALARY/YEARLY_BONUS_AMOUNT"
 				+ ",TEAM_ID"
 				+ "&$count=true&$skip=0&$top=2", {
-					"@odata.count" : 1,
+					"@odata.count" : "1",
 					value : [{
 						DrillState : "leaf",
 						ID : "1",
@@ -31757,50 +31952,50 @@ sap.ui.define([
 	// Scenario: Automatic retry of failed PATCHes, along the lines of
 	// MIT.SalesOrderCreateRelative.html, but with $auto group
 	// JIRA: CPOUI5UISERVICESV3-1450
-	[function () {
-		var oStatusBinding = this.oView.byId("status").getBinding("value");
+	[function () { // Context#setProperty restarts only PATCHes for the same entity (other field)
+		var oStatusBinding = this.oView.byId("status0").getBinding("value");
 
-		this.expectChange("status", "Busy")
+		this.expectChange("status0", "Busy")
 			.expectRequest({
 				method : "PATCH",
 				url : "EMPLOYEES('3')",
-				headers : {"If-Match" : "ETag0"},
+				headers : {"If-Match" : "ETag3"},
 				payload : {
-					ROOM_ID : "42", // <-- retry
+					ROOM_ID : "31", // <-- retry
 					STATUS : "Busy"
 				}
 			}, {/* don't care */});
 
-		oStatusBinding.setValue("Busy"); // a different field is changed
-	}, function () {
-		var oRoomIdBinding = this.oView.byId("roomId").getBinding("value");
+		oStatusBinding.setValue("Busy");
+	}, function () { // Context#setProperty restarts only PATCHes for the same entity (same field)
+		var oRoomIdBinding = this.oView.byId("roomId0").getBinding("value");
 
-		this.expectChange("roomId", "23")
+		this.expectChange("roomId0", "32")
 			.expectRequest({
 				method : "PATCH",
 				url : "EMPLOYEES('3')",
-				headers : {"If-Match" : "ETag0"},
+				headers : {"If-Match" : "ETag3"},
 				payload : {
-					ROOM_ID : "23" // <-- new change wins over retry
+					ROOM_ID : "32" // <-- new change wins over retry
 				}
 			}, {/* don't care */});
 
-		oRoomIdBinding.setValue("23"); // the same field is changed again
-	}, function (assert) {
+		oRoomIdBinding.setValue("32");
+	}, function (assert) { // ODCB#execute restarts only PATCHes for the same entity
 		var sAction = "com.sap.gateway.default.iwbep.tea_busi.v0001.AcChangeTeamOfEmployee",
-			oRoomIdBinding = this.oView.byId("roomId").getBinding("value");
+			oRoomIdBinding = this.oView.byId("roomId0").getBinding("value");
 
 		this.expectRequest({
 				method : "PATCH",
 				url : "EMPLOYEES('3')",
-				headers : {"If-Match" : "ETag0"},
+				headers : {"If-Match" : "ETag3"},
 				payload : {
-					ROOM_ID : "42" // <-- retry
+					ROOM_ID : "31" // <-- retry
 				}
 			}, {/* don't care */})
 			.expectRequest({
 				method : "POST",
-				headers : {"If-Match" : "ETag0"},
+				headers : {"If-Match" : "ETag3"},
 				url : "EMPLOYEES('3')/" + sAction,
 				payload : {TeamID : "23"}
 			}, {/* don't care */});
@@ -31813,69 +32008,85 @@ sap.ui.define([
 				assert.strictEqual(oReturnValueContext, undefined,
 					"no R.V.C. w/o key predicate");
 			});
-/* eslint-disable no-tabs */
-// Note: "Cannot delete due to pending changes" --> this scenario is currently impossible
-//
-//	}, function () {
-//		var oRoomIdBinding = this.oView.byId("roomId").getBinding("text");
-//
-//		this.expectRequest({
-//				method : "PATCH",
-//				url : "EMPLOYEES('3')",
-//				headers : {"If-Match" : "ETag0"},
-//				payload : {
-//					ROOM_ID : "42" // <-- retry
-//				}
-//			}, {/* don't care */})
-//			.expectRequest({
-//				method : "DELETE",
-//				url : "EMPLOYEES('3')",
-//				headers : {"If-Match" : "ETag0"}
-//			});
-//
-//		return oRoomIdBinding.getContext().delete(); // DELETE also triggers retry
-/* eslint-enable no-tabs */
-	}, function (assert) {
+	}, function () { // CPOUI5ODATAV4-1932: Context#delete restarts only PATCHes for the same entity
+		var oRoomIdBinding = this.oView.byId("roomId0").getBinding("value");
+
+		this.expectChange("roomId0", null)
+			.expectChange("status0", null)
+			.expectRequest({
+				method : "PATCH",
+				url : "EMPLOYEES('3')",
+				headers : {"If-Match" : "ETag3"},
+				payload : {
+					ROOM_ID : "31" // <-- retry
+				}
+			}, {/* don't care */})
+			.expectRequest({
+				method : "DELETE",
+				url : "EMPLOYEES('3')",
+				headers : {"If-Match" : "*"}
+			});
+
+		return oRoomIdBinding.getContext().delete();
+	}, function () { // ODataModel#submitBatch restarts all PATCHes
 		this.expectRequest({
-			method : "PATCH",
-			url : "EMPLOYEES('3')",
-			headers : {"If-Match" : "ETag0"},
-			payload : {
-				ROOM_ID : "42" // <-- retry
-			}
-		}, {/* don't care */});
+				method : "PATCH",
+				url : "EMPLOYEES('3')",
+				headers : {"If-Match" : "ETag3"},
+				payload : {
+					ROOM_ID : "31" // <-- retry
+				}
+			}, {/* don't care */})
+			.expectRequest({
+				method : "PATCH",
+				url : "EMPLOYEES('4')",
+				headers : {"If-Match" : "ETag4"},
+				payload : {
+					ROOM_ID : "41" // <-- retry
+				}
+			}, {/* don't care */});
 
-		assert.strictEqual(this.oModel.hasPendingChanges(), true);
-		assert.strictEqual(this.oView.byId("form").getObjectBinding().hasPendingChanges(), true);
-
-		return this.oModel.submitBatch("$auto");
-	}, function (assert) {
-		assert.strictEqual(this.oModel.hasPendingChanges(), true);
-		assert.strictEqual(this.oView.byId("form").getObjectBinding().hasPendingChanges(), true);
-
-		this.expectChange("roomId", "2")
+		return this.oModel.submitBatch("$auto").then(function () {
+			return /*bAll*/true;
+		});
+	}, function (assert, oForm0Binding, oForm1Binding) {
+		// ODataModel#resetChanges removes all PATCHes
+		this.expectChange("roomId0", "30")
+			.expectChange("roomId1", "40")
 			.expectCanceledError("Failed to update path /EMPLOYEES('3')/ROOM_ID",
-				"Request canceled: PATCH EMPLOYEES('3'); group: $parked.$auto");
+				"Request canceled: PATCH EMPLOYEES('3'); group: $parked.$auto")
+			.expectCanceledError("Failed to update path /EMPLOYEES('4')/ROOM_ID",
+				"Request canceled: PATCH EMPLOYEES('4'); group: $parked.$auto");
 
 		// code under test
 		this.oModel.resetChanges("$auto");
 
 		assert.strictEqual(this.oModel.hasPendingChanges(), false);
-		assert.strictEqual(this.oView.byId("form").getObjectBinding().hasPendingChanges(), false);
+		assert.strictEqual(oForm0Binding.hasPendingChanges(), false);
+		assert.strictEqual(oForm1Binding.hasPendingChanges(), false);
 
-		return this.oModel.submitBatch("$auto");
-	}, function (assert) {
-		// failed PATCH is retried within the same $batch as the side effect
-		var oEmployeeBinding = this.oView.byId("form").getObjectBinding();
-
+		return this.oModel.submitBatch("$auto").then(function () {
+			return /*bAll*/true;
+		});
+	}, function (_assert, oForm0Binding) {
+		// Context#requestSideEffects restarts all PATCHes within the same $batch as the side effect
 		this.expectRequest({
 				batchNo : 2,
-				headers : {"If-Match" : "ETag0"},
+				headers : {"If-Match" : "ETag3"},
 				method : "PATCH",
 				payload : {
-					ROOM_ID : "42" // <-- retry
+					ROOM_ID : "31" // <-- retry
 				},
 				url : "EMPLOYEES('3')"
+			}, {/* don't care */})
+			.expectRequest({
+				batchNo : 2,
+				headers : {"If-Match" : "ETag4"},
+				method : "PATCH",
+				payload : {
+					ROOM_ID : "41" // <-- retry
+				},
+				url : "EMPLOYEES('4')"
 			}, {/* don't care */})
 			.expectRequest({
 				batchNo : 2,
@@ -31883,44 +32094,63 @@ sap.ui.define([
 			}, {
 				STATUS : "Busy"
 			})
-			.expectChange("status", "Busy");
+			.expectChange("status0", "Busy");
 
-		assert.strictEqual(this.oModel.hasPendingChanges(), true);
-		assert.strictEqual(oEmployeeBinding.hasPendingChanges(), true);
-
-		return Promise.all([
-			oEmployeeBinding.getBoundContext().requestSideEffects([{$PropertyPath : "STATUS"}]),
-			this.oModel.submitBatch("$auto")
-		]);
+		return oForm0Binding.getBoundContext().requestSideEffects([{$PropertyPath : "STATUS"}])
+			.then(function () {
+				return /*bAll*/true;
+			});
 	}].forEach(function (fnCodeUnderTest, i) {
 		QUnit.test("Later retry failed PATCHes for $auto, " + i, function (assert) {
-			var oModel = this.createTeaBusiModel({groupId : "$direct", updateGroupId : "$auto"}),
+			var oForm0Binding,
+				oForm1Binding,
+				oModel = this.createTeaBusiModel({groupId : "$direct", updateGroupId : "$auto"}),
 				sView = '\
-<FlexBox binding="{/EMPLOYEES(\'3\')}" id="form">\
-	<Input id="roomId" value="{ROOM_ID}"/>\
-	<Input id="status" value="{STATUS}"/>\
+<FlexBox binding="{/EMPLOYEES(\'3\')}" id="form0">\
+	<Input id="roomId0" value="{ROOM_ID}"/>\
+	<Input id="status0" value="{STATUS}"/>\
+</FlexBox>\
+<FlexBox binding="{/EMPLOYEES(\'4\')}" id="form1">\
+	<Input id="roomId1" value="{ROOM_ID}"/>\
 </FlexBox>',
 				that = this;
 
 			this.expectRequest("EMPLOYEES('3')", {
-					"@odata.etag" : "ETag0",
+					"@odata.etag" : "ETag3",
 					ID : "3",
-					ROOM_ID : "2",
+					ROOM_ID : "30",
 					STATUS : "Occupied"
 				})
-				.expectChange("roomId", "2")
-				.expectChange("status", "Occupied");
+				.expectRequest("EMPLOYEES('4')", {
+					"@odata.etag" : "ETag4",
+					ID : "4",
+					ROOM_ID : "40"
+				})
+				.expectChange("roomId0", "30")
+				.expectChange("roomId1", "40")
+				.expectChange("status0", "Occupied");
 
 			return this.createView(assert, sView, oModel).then(function () {
-				var oRoomIdBinding = that.oView.byId("roomId").getBinding("value");
+				var oRoomIdBinding0 = that.oView.byId("roomId0").getBinding("value"),
+					oRoomIdBinding1 = that.oView.byId("roomId1").getBinding("value");
 
-				that.expectChange("roomId", "42")
+				oForm0Binding = that.oView.byId("form0").getObjectBinding();
+				oForm1Binding = that.oView.byId("form1").getObjectBinding();
+
+				that.expectChange("roomId0", "31")
+					.expectChange("roomId1", "41")
 					.expectRequest({
 						method : "PATCH",
 						url : "EMPLOYEES('3')",
-						headers : {"If-Match" : "ETag0"},
-						payload : {ROOM_ID : "42"}
+						headers : {"If-Match" : "ETag3"},
+						payload : {ROOM_ID : "31"}
 					}, createErrorInsideBatch())
+					.expectRequest({
+						method : "PATCH",
+						url : "EMPLOYEES('4')",
+						headers : {"If-Match" : "ETag4"},
+						payload : {ROOM_ID : "41"}
+					}) // no response required
 					.expectMessages([{
 						code : "CODE",
 						message : "Request intentionally failed",
@@ -31930,15 +32160,28 @@ sap.ui.define([
 					}]);
 				that.oLogMock.expects("error")
 					.withArgs("Failed to update path /EMPLOYEES('3')/ROOM_ID");
+				that.oLogMock.expects("error")
+					.withArgs("Failed to update path /EMPLOYEES('4')/ROOM_ID");
 
-				oRoomIdBinding.setValue("42");
+				oRoomIdBinding0.setValue("31");
+				oRoomIdBinding1.setValue("41");
+
+				assert.ok(oModel.hasPendingChanges());
+				assert.ok(oForm0Binding.hasPendingChanges());
+				assert.ok(oForm1Binding.hasPendingChanges());
 
 				return that.waitForChanges(assert);
 			}).then(function () {
 				return Promise.all([
-					fnCodeUnderTest.call(that, assert),
+					fnCodeUnderTest.call(that, assert, oForm0Binding, oForm1Binding),
 					that.waitForChanges(assert)
 				]);
+			}).then(function (aResults) {
+				var bAll = aResults[0];
+
+				assert.strictEqual(oModel.hasPendingChanges(), !bAll);
+				assert.strictEqual(oForm0Binding.hasPendingChanges(), false);
+				assert.strictEqual(oForm1Binding.hasPendingChanges(), !bAll);
 			});
 		});
 	});
@@ -35047,7 +35290,7 @@ sap.ui.define([
 			.expectChange("soCurrencyCode", "EUR")
 			.expectRequest("SalesOrderList('1')/SO_2_SOITEM?$count=true"
 				+ "&$select=ItemPosition,Note,SalesOrderID&$skip=0&$top=2", {
-				"@odata.count" : bEmpty ? 0 : 3,
+				"@odata.count" : bEmpty ? "0" : "3",
 				value : bEmpty ? [] : [{
 					ItemPosition : "10",
 					Note : "Foo",
@@ -35148,7 +35391,7 @@ sap.ui.define([
 					url : "SalesOrderList('1')/SO_2_SOITEM"
 						+ "?$count=true&$select=ItemPosition,Note,SalesOrderID&$skip=0&$top=2"
 				}, { // ignored if !bSuccess; else bEmpty does not play a role anymore
-					"@odata.count" : 4,
+					"@odata.count" : "4",
 					value : aItems
 				});
 			if (bSuccess) {
@@ -35165,7 +35408,7 @@ sap.ui.define([
 								+ "&$filter=not (SalesOrderID eq '1' and ItemPosition eq '0')"
 								+ "&$top=0"
 						}, {
-							"@odata.count" : 4, ///... looks like it is
+							"@odata.count" : "4", ///... looks like it is
 							value : []
 						})
 						.expectChange("count", "5");
@@ -41330,7 +41573,7 @@ sap.ui.define([
 		}).then(function () {
 			that.expectRequest("SalesOrderList?$count=true&$filter=GrossAmount lt 0"
 				+ "&$select=GrossAmount,SalesOrderID&$skip=0&$top=2", {
-					"@odata.count" : 0,
+					"@odata.count" : "0",
 					value : []
 				});
 

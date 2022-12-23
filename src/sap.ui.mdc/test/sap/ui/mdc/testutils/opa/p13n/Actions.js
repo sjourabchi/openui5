@@ -54,7 +54,16 @@ sap.ui.define([
 
 				if (oControlInstance.isA("sap.ui.comp.smartchart.SmartChart")) {
 					aDialogMatchers.push(function(oP13nDialog) {
-						return oP13nDialog.getParent().getChart() === oControlInstance.getChart().getId();
+
+							var oInnerChart = oControlInstance.getItems().find(function(oItem){
+								return oItem.isA("sap.chart.Chart");
+							});
+
+							if (!oInnerChart){
+								return false;
+							}
+
+							return oP13nDialog.getParent().getChart() === oInnerChart.getId();
 					});
 				} else {
 					aDialogMatchers.push(new Ancestor(oControlInstance, false));
@@ -522,7 +531,7 @@ sap.ui.define([
 								var oToolbar = aToolbars[0];
 								// Get label of the GroupViewItem
 								this.waitFor({
-									controlType: "sap.m.Label",
+									controlType: "sap.m.Title",
 									matchers: new Ancestor(oToolbar, true),
 									success: function(aToolbarLabels) {
 										var oToolbarLabel = aToolbarLabels[0];

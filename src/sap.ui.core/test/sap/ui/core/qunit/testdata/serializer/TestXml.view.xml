@@ -6,11 +6,9 @@
 	<layout:VerticalLayout
 		id="thaPage">
 		<Image
-			src="http://www.sap.com/global/images/SAPLogo.gif"
+			src="some/image/url.png"
 			alt="alternative text for image">
 		</Image>
-		<mvc:HTMLView
-			viewName="serializer.view.NestedHtmlView" />
 		<Label
 			id="label"
 			text="Label">

@@ -16,11 +16,6 @@ sap.ui.define("sample/ExtensionProvider",
 						]);
 					});
 				});
-			} else {
-				return [
-					sap.ui.requireSync("sample/Oil.extension"),   // legacy-relevant: intentional sync path test
-					sap.ui.requireSync("sample/Retail.extension") // legacy-relevant: intentional sync path test
-				];
 			}
 		}
 	};
