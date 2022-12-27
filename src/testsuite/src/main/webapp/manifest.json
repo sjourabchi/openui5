@@ -51,7 +51,7 @@
             },
             "invoice": {
               "type": "sap.ui.model.json.JSONModel",
-		"uri": "./data/Invoices.json"
+		          "uri": "../mockdata/Invoices.json"
             }
       },
       "resources": {
