@@ -10,7 +10,7 @@ sap.ui.define([
          // set data model on view
          var oData = {
             recipient : {
-               name : "World"
+               name : "Lrrr ..."
             }
          };
          var oModel = new JSONModel(oData);
